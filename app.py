@@ -96,6 +96,8 @@ def expired(z):
 
 def watch_of(z, closed, label):
     """وضعیت بررسی قیمت: hit=به ناحیه رسیده، inst=فوری (بدون بررسی قیمت)، wait=ستاپ A/B تأییدشده و منتظر رسیدن قیمت.
+    closed در اینجا یعنی «تأییدشده» (بسته‌شدن رأی‌گیری یا رسیدن امتیاز فعلی به A/B).
+    ناحیه‌ی False‌شده هیچ‌وقت wait نیست: از تب منتظر بیرون می‌آید و قیمتش دیگر بررسی نمی‌شود.
     فقط نواحی جدید (w=1) بررسی می‌شوند تا نواحی قدیمی بعد از دیپلوی هشدار الکی نزنند."""
     if z.get("hit"): return "hit"
     if z.get("inst"): return "inst"
@@ -115,8 +117,13 @@ def state(z):
         or bool(z.get("v") == 2 and z.get("closed_at"))
     a, b = thr(mx)
     label = tier(total, mx) if closed else ("N" if n == 0 else "P")
+    # سطح «فعلی» (موقت) با امتیازهای ثبت‌شده تا همین لحظه؛ تا رأی‌گیری باز است ممکن است عوض شود
+    lv = tier(total, mx) if n > 0 else "N"
+    # بررسی قیمت از همان لحظه‌ای شروع می‌شود که ستاپ A/B تأیید شد (پیام ربات طلا رفت)، نه فقط بعد از بسته شدن رأی‌گیری.
+    # اگر امتیاز دوباره به پرریسک برگردد، lv=R می‌شود و ناحیه خودکار از بررسی/تب «منتظر» بیرون می‌آید.
+    watch = watch_of(z, closed or lv in ("A", "B"), label if closed else lv)
     return {"total": total, "n": n, "max": mx, "closed": closed, "expired": is_expired, "a": a, "b": b, "skip": sk,
-            "label": label, "watch": watch_of(z, closed, label)}
+            "label": label, "lv": lv, "watch": watch}
 
 def freeze(z):
     """وقتی ناحیه‌ی نسخه‌ی ۲ بسته یا False شد، فهرست غایب‌ها ثابت می‌شود تا نتیجه با تغییر مرخصی‌ها عوض نشود"""
@@ -297,6 +304,8 @@ def q_tier(z, up):
         txt.append(f"⏱ {max(1, left)} دقیقه تا پایان مهلت")
     else:
         txt.append("⏱ مهلت رأی‌گیری: نامحدود")
+    if s.get("w") and not s.get("inst"):
+        txt.append("⏳ منتظر رسیدن قیمت به ناحیه — از همین لحظه قیمت بررسی می‌شود؛ با رسیدن، هشدار جدید می‌آید")
     if SITE: txt.append(zlink(s, "🌐 مشاهده‌ی ناحیه در سایت"))
     txt = "\n".join(txt)
     def run():
@@ -488,7 +497,8 @@ def hit_text(z):
     L = [f"🚨 <b>رسید به ناحیه!</b> {tag(z)}".rstrip(), f"💰 <b>{esc(z['sym'])}</b> — {arrow}", "",
          f"🎯 ناحیه: <code>{esc(z['price'])}</code>", f"📊 قیمت لحظه‌ای: <b>{esc(h['f'])}</b>"]
     if dist: L.append(f"📏 فاصله: <b>{dist}</b>")
-    L += ["", f"{TN[st['label']]}  ·  مجموع {st['total']} از {st['max'] * 5}  ·  {st['n']}/{st['max']} رأی",
+    lab = TN[st["label"]] if st["closed"] else TN[st["lv"]] + " (فعلاً؛ رأی‌گیری هنوز باز است)"
+    L += ["", f"{lab}  ·  مجموع {st['total']} از {st['max'] * 5}  ·  {st['n']}/{st['max']} رأی",
           f"👤 ثبت‌کننده: <b>{esc(z['by'])}</b>"]
     if z.get("note"): L.append(f"💬 {esc(z['note'])}")
     if z.get("link") and z["link"] != "#": L.append(f"🔗 {esc(z['link'])}")
@@ -625,6 +635,7 @@ def api_false():
         if d.get("by") not in MEMBERS: return err("نام عضو معتبر نیست")
         if z.get("false"): return err("قبلاً False شده", 409)
         z["false"] = {"by": d["by"], "reason": (d.get("reason") or "").strip()[:300], "t": int(time.time() * 1000)}
+        PX.pop(z["id"], None)         # از بررسی قیمت و تب «منتظر» بیرون می‌آید (state: false → watch=None)
         save(z); freeze(z)
     # پیام False دیگر به تلگرام نمی‌رود (q_false عمداً صدا زده نمی‌شود)
     return jsonify({"ok": True})
